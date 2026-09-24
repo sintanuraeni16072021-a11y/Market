@@ -260,6 +260,8 @@ const openScanner = async () => {
         if (!navigator.mediaDevices?.getUserMedia) {
             throw new Error('Peramban ini tidak mendukung akses kamera.');
         }
+        // Bersihkan sisa render sebelumnya agar instance baru selalu mulai bersih
+        document.getElementById('kasira-scanner-reader')?.replaceChildren();
         qrScanner = new Html5Qrcode('kasira-scanner-reader');
         await qrScanner.start(
             { facingMode: 'environment' },
@@ -295,6 +297,7 @@ const closeScanner = async () => {
     } catch {
         // abaikan error saat menutup kamera
     } finally {
+        document.getElementById('kasira-scanner-reader')?.replaceChildren();
         qrScanner = null;
         lastScannedCode = '';
         showScanner.value = false;
