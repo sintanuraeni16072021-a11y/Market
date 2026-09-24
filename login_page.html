@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en"  class="">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        
+        <script>
+            (function() {
+                const appearance = 'system';
+
+                if (appearance === 'system') {
+                    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+                    if (prefersDark) {
+                        document.documentElement.classList.add('dark');
+                    }
+                }
+            })();
+        </script>
+
+        
+        <style>
+            html {
+                background-color: oklch(1 0 0);
+            }
+
+            html.dark {
+                background-color: oklch(0.145 0 0);
+            }
+        </style>
+
+        <link rel="icon" href="/favicon.ico" sizes="any">
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+        <link rel="preload" as="font" href="http://[::1]:5174/__laravel_vite_plugin__/fonts/394ea34433fc30fa.woff2" type="font/woff2" crossorigin="anonymous" />
+<link rel="preload" as="font" href="http://[::1]:5174/__laravel_vite_plugin__/fonts/6839e6ac9b02098f.woff2" type="font/woff2" crossorigin="anonymous" />
+<link rel="preload" as="font" href="http://[::1]:5174/__laravel_vite_plugin__/fonts/da0f34be3031f6a9.woff2" type="font/woff2" crossorigin="anonymous" />
+<style>
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/394ea34433fc30fa.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/b9e69f166b7c953e.woff") format("woff");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/6839e6ac9b02098f.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/2cdddac2443723f8.woff") format("woff");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/da0f34be3031f6a9.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("http://[::1]:5174/__laravel_vite_plugin__/fonts/c98ff8fc8bcd21a3.woff") format("woff");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+:root {
+  --font-instrument-sans: "Instrument Sans";
+}
+
+.font-instrument-sans {
+  font-family: var(--font-instrument-sans);
+}
+</style>
+        <script type="module" src="http://[::1]:5174/@vite/client"></script><link rel="stylesheet" href="http://[::1]:5174/resources/css/app.css" /><script type="module" src="http://[::1]:5174/resources/js/app.ts"></script><script type="module" src="http://[::1]:5174/resources/js/pages/auth/Login.vue"></script>        <title>Laravel</title>
+    </head>
+    <body class="font-sans antialiased">
+        <script data-page="app" type="application/json">{"component":"auth\/Login","props":{"errors":{},"name":"Laravel","auth":{"user":null},"sekolah":null,"sidebarOpen":true,"sekolahList":[{"id_sekolah":1,"kode_sekolah":"SMKN2TAS","nama_sekolah":"SMKN 2 Tasikmalaya"}],"status":null},"url":"\/login","version":"fc5d8cfc0eb75e9bd4337446b218837c","sharedProps":["errors","name","auth","sekolah","sidebarOpen"]}</script><div id="app"></div>
+    <script data-inertia-devtools-id type="application/json">"01M2ME232JQ9YTQ1DMDK9P9W3C"</script></body>
+</html>
