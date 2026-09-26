@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Camera, RefreshCw, Zap, ZapOff, AlertCircle, FlipHorizontal } from 'lucide-vue-next';
+import { toast } from 'vue-sonner';
 
 const props = withDefaults(
     defineProps<{
@@ -44,6 +45,55 @@ let lastScannedCode = '';
 let lastScannedAt = 0;
 let offscreenCanvas: HTMLCanvasElement | null = null;
 let zxingDecoder: any = null;
+let barcodeDetector: any = null;
+
+const SCAN_FORMATS = ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'itf', 'data_matrix'];
+
+const ensureZxingDecoder = async () => {
+    if (zxingDecoder) return zxingDecoder;
+    try {
+        const { ZXingHtml5QrcodeDecoder } = await import('html5-qrcode/esm/zxing-html5-qrcode-decoder.js');
+        const { Html5QrcodeSupportedFormats } = await import('html5-qrcode');
+        zxingDecoder = new ZXingHtml5QrcodeDecoder(
+            [
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.CODE_39,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+                Html5QrcodeSupportedFormats.QR_CODE,
+                Html5QrcodeSupportedFormats.DATA_MATRIX,
+            ],
+            false,
+            { log: () => {}, logError: () => {}, logWarn: () => {} }
+        );
+    } catch {
+        zxingDecoder = null;
+    }
+    return zxingDecoder;
+};
+
+const ensureBarcodeDetector = async () => {
+    if (barcodeDetector || !('BarcodeDetector' in window)) return barcodeDetector;
+    try {
+        const BD = (window as any).BarcodeDetector;
+        let formats = [...SCAN_FORMATS];
+        try {
+            const supported = await BD.getSupportedFormats();
+            if (Array.isArray(supported) && supported.length > 0) {
+                const filtered = formats.filter((f) => supported.includes(f));
+                if (filtered.length > 0) formats = filtered;
+            }
+        } catch {
+            // pakai daftar default bila query gagal
+        }
+        barcodeDetector = new BD({ formats });
+    } catch {
+        barcodeDetector = null;
+    }
+    return barcodeDetector;
+};
 
 const playBeep = () => {
     try {
@@ -101,16 +151,16 @@ const scanLoop = async () => {
     const video = videoRef.value;
     if (video && video.readyState >= 2 && video.videoWidth > 0) {
         try {
-            if ('BarcodeDetector' in window) {
-                const detector = new (window as any).BarcodeDetector({
-                    formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'itf', 'data_matrix']
-                });
+            // 1. BarcodeDetector bawaan browser (instance dipakai ulang)
+            const detector = await ensureBarcodeDetector();
+            if (detector) {
                 const barcodes = await detector.detect(video);
                 if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
                     onScanDetected(barcodes[0].rawValue);
                     return;
                 }
             } else {
+                // 2. Fallback ZXing decoder menggunakan canvas
                 if (!offscreenCanvas) {
                     offscreenCanvas = document.createElement('canvas');
                 }
@@ -119,31 +169,10 @@ const scanLoop = async () => {
                 const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
                 if (ctx) {
                     ctx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
-                    if (!zxingDecoder) {
+                    const decoder = await ensureZxingDecoder();
+                    if (decoder) {
                         try {
-                            const { ZXingHtml5QrcodeDecoder } = await import('html5-qrcode/esm/zxing-html5-qrcode-decoder.js');
-                            const { Html5QrcodeSupportedFormats } = await import('html5-qrcode');
-                            zxingDecoder = new ZXingHtml5QrcodeDecoder(
-                                [
-                                    Html5QrcodeSupportedFormats.EAN_13,
-                                    Html5QrcodeSupportedFormats.EAN_8,
-                                    Html5QrcodeSupportedFormats.CODE_128,
-                                    Html5QrcodeSupportedFormats.CODE_39,
-                                    Html5QrcodeSupportedFormats.UPC_A,
-                                    Html5QrcodeSupportedFormats.UPC_E,
-                                    Html5QrcodeSupportedFormats.QR_CODE,
-                                    Html5QrcodeSupportedFormats.DATA_MATRIX,
-                                ],
-                                false,
-                                { log: () => {}, logError: () => {}, logWarn: () => {} }
-                            );
-                        } catch {
-                            // ignore import error
-                        }
-                    }
-                    if (zxingDecoder) {
-                        try {
-                            const res = zxingDecoder.decode(offscreenCanvas);
+                            const res = decoder.decode(offscreenCanvas);
                             if (res && res.text) {
                                 onScanDetected(res.text);
                                 return;
@@ -161,6 +190,56 @@ const scanLoop = async () => {
 
     if (isScanning.value) {
         scanTimer = setTimeout(scanLoop, 120);
+    }
+};
+
+// Scan dari file foto (jalan tanpa izin kamera / di koneksi non-HTTPS)
+const onScanPhoto = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) throw new Error('canvas');
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+
+        const detector = await ensureBarcodeDetector();
+        if (detector) {
+            try {
+                const detected = await detector.detect(canvas);
+                if (detected && detected.length > 0 && detected[0].rawValue) {
+                    playBeep();
+                    emit('scan', detected[0].rawValue);
+                    if (!props.continuous) closeModal();
+                    return;
+                }
+            } catch {
+                // lanjut ke ZXing
+            }
+        }
+        const decoder = await ensureZxingDecoder();
+        if (decoder) {
+            try {
+                const res = decoder.decode(canvas);
+                if (res && res.text) {
+                    playBeep();
+                    emit('scan', res.text);
+                    if (!props.continuous) closeModal();
+                    return;
+                }
+            } catch {
+                // tidak terbaca
+            }
+        }
+        toast.error('Foto tak terbaca', { description: 'Pastikan barcode jelas, fokus, dan cukup cahaya.' });
+    } catch {
+        toast.error('Foto tak terbaca', { description: 'Pastikan barcode jelas, fokus, dan cukup cahaya.' });
     }
 };
 
@@ -387,9 +466,26 @@ onUnmounted(async () => {
                     </Button>
                 </div>
 
-                <Button type="button" variant="secondary" size="sm" @click="closeModal" class="text-xs h-8 ml-auto">
-                    Tutup
-                </Button>
+                    <label
+                        for="modal-scan-upload"
+                        class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium shadow-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                        title="Ambil foto barcode (jalan tanpa izin kamera)"
+                    >
+                        <Camera class="w-3.5 h-3.5" />
+                        Foto
+                    </label>
+                    <input
+                        id="modal-scan-upload"
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        class="hidden"
+                        @change="onScanPhoto"
+                    />
+
+                    <Button type="button" variant="secondary" size="sm" @click="closeModal" class="text-xs h-8 ml-auto">
+                        Tutup
+                    </Button>
             </div>
         </DialogContent>
     </Dialog>
