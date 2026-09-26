@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted, nextTick } from 'vue';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import {
     Dialog,
     DialogContent,
@@ -9,7 +8,7 @@ import {
     DialogDescription,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Camera, RefreshCw, Zap, ZapOff, AlertCircle } from 'lucide-vue-next';
+import { Camera, RefreshCw, Zap, ZapOff, AlertCircle, FlipHorizontal } from 'lucide-vue-next';
 
 const props = withDefaults(
     defineProps<{
@@ -30,15 +29,21 @@ const emit = defineEmits<{
     (e: 'scan', decodedText: string): void;
 }>();
 
-const scannerContainerId = 'barcode-camera-scanner-view';
-let html5QrCode: Html5Qrcode | null = null;
-
+const videoRef = ref<HTMLVideoElement | null>(null);
 const isScanning = ref(false);
 const errorMsg = ref<string | null>(null);
 const cameras = ref<Array<{ id: string; label: string }>>([]);
 const currentCameraIndex = ref(0);
 const torchOn = ref(false);
 const hasTorch = ref(false);
+const isMirrored = ref(false);
+
+let mediaStream: MediaStream | null = null;
+let scanTimer: any = null;
+let lastScannedCode = '';
+let lastScannedAt = 0;
+let offscreenCanvas: HTMLCanvasElement | null = null;
+let zxingDecoder: any = null;
 
 const playBeep = () => {
     try {
@@ -62,96 +67,170 @@ const playBeep = () => {
     }
 };
 
-const stopScanner = async () => {
-    if (html5QrCode && isScanning.value) {
-        try {
-            await html5QrCode.stop();
-            await html5QrCode.clear();
-        } catch (e) {
-            console.error('Error stopping scanner:', e);
-        }
-    }
+const stopScanner = () => {
     isScanning.value = false;
+    if (scanTimer) {
+        clearTimeout(scanTimer);
+        scanTimer = null;
+    }
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+    if (videoRef.value) {
+        videoRef.value.srcObject = null;
+    }
     torchOn.value = false;
     hasTorch.value = false;
 };
 
-const startScanner = async () => {
+const onScanDetected = (decodedText: string) => {
+    const now = Date.now();
+    if (decodedText === lastScannedCode && now - lastScannedAt < 1500) return;
+    lastScannedCode = decodedText;
+    lastScannedAt = now;
+    playBeep();
+    emit('scan', decodedText);
+    if (!props.continuous) {
+        closeModal();
+    }
+};
+
+const scanLoop = async () => {
+    if (!isScanning.value) return;
+    const video = videoRef.value;
+    if (video && video.readyState >= 2 && video.videoWidth > 0) {
+        try {
+            if ('BarcodeDetector' in window) {
+                const detector = new (window as any).BarcodeDetector({
+                    formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'itf', 'data_matrix']
+                });
+                const barcodes = await detector.detect(video);
+                if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                    onScanDetected(barcodes[0].rawValue);
+                    return;
+                }
+            } else {
+                if (!offscreenCanvas) {
+                    offscreenCanvas = document.createElement('canvas');
+                }
+                offscreenCanvas.width = video.videoWidth;
+                offscreenCanvas.height = video.videoHeight;
+                const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+                if (ctx) {
+                    ctx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+                    if (!zxingDecoder) {
+                        try {
+                            const { ZXingHtml5QrcodeDecoder } = await import('html5-qrcode/esm/zxing-html5-qrcode-decoder.js');
+                            const { Html5QrcodeSupportedFormats } = await import('html5-qrcode');
+                            zxingDecoder = new ZXingHtml5QrcodeDecoder(
+                                [
+                                    Html5QrcodeSupportedFormats.EAN_13,
+                                    Html5QrcodeSupportedFormats.EAN_8,
+                                    Html5QrcodeSupportedFormats.CODE_128,
+                                    Html5QrcodeSupportedFormats.CODE_39,
+                                    Html5QrcodeSupportedFormats.UPC_A,
+                                    Html5QrcodeSupportedFormats.UPC_E,
+                                    Html5QrcodeSupportedFormats.QR_CODE,
+                                    Html5QrcodeSupportedFormats.DATA_MATRIX,
+                                ],
+                                false,
+                                { log: () => {}, logError: () => {}, logWarn: () => {} }
+                            );
+                        } catch {
+                            // ignore import error
+                        }
+                    }
+                    if (zxingDecoder) {
+                        try {
+                            const res = zxingDecoder.decode(offscreenCanvas);
+                            if (res && res.text) {
+                                onScanDetected(res.text);
+                                return;
+                            }
+                        } catch {
+                            // no barcode
+                        }
+                    }
+                }
+            }
+        } catch {
+            // ignore scan frame error
+        }
+    }
+
+    if (isScanning.value) {
+        scanTimer = setTimeout(scanLoop, 120);
+    }
+};
+
+const startScanner = async (deviceId?: string) => {
     errorMsg.value = null;
+    stopScanner();
     await nextTick();
 
     try {
-        if (!html5QrCode) {
-            html5QrCode = new Html5Qrcode(scannerContainerId, {
-                formatsToSupport: [
-                    Html5QrcodeSupportedFormats.EAN_13,
-                    Html5QrcodeSupportedFormats.EAN_8,
-                    Html5QrcodeSupportedFormats.CODE_128,
-                    Html5QrcodeSupportedFormats.CODE_39,
-                    Html5QrcodeSupportedFormats.UPC_A,
-                    Html5QrcodeSupportedFormats.UPC_E,
-                    Html5QrcodeSupportedFormats.QR_CODE,
-                    Html5QrcodeSupportedFormats.DATA_MATRIX,
-                    Html5QrcodeSupportedFormats.ITF,
-                    Html5QrcodeSupportedFormats.CODABAR,
-                ],
-                verbose: false,
-            });
-        }
-
-        const devices = await Html5Qrcode.getCameras();
-        if (!devices || devices.length === 0) {
-            errorMsg.value = 'Tidak ada kamera yang terdeteksi di perangkat Anda.';
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            errorMsg.value = 'Peramban tidak mendukung akses kamera atau koneksi tidak aman (HTTPS / localhost).';
             return;
         }
 
-        cameras.value = devices;
-
-        // Prefer back / environment camera by default
-        let selectedCameraId = devices[0].id;
-        const backCameraIdx = devices.findIndex(d =>
-            d.label.toLowerCase().includes('back') ||
-            d.label.toLowerCase().includes('rear') ||
-            d.label.toLowerCase().includes('environment') ||
-            d.label.toLowerCase().includes('belakang')
-        );
-        if (backCameraIdx !== -1) {
-            currentCameraIndex.value = backCameraIdx;
-            selectedCameraId = devices[backCameraIdx].id;
+        let constraints: MediaStreamConstraints;
+        if (deviceId) {
+            constraints = {
+                video: { deviceId: { exact: deviceId } },
+                audio: false,
+            };
+        } else {
+            constraints = {
+                video: {
+                    facingMode: { ideal: 'environment' },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                audio: false,
+            };
         }
 
-        const config = {
-            fps: 15,
-            qrbox: { width: 260, height: 160 },
-            aspectRatio: 1.0,
-        };
-
-        await html5QrCode.start(
-            selectedCameraId,
-            config,
-            (decodedText) => {
-                playBeep();
-                emit('scan', decodedText);
-                if (!props.continuous) {
-                    closeModal();
-                }
-            },
-            () => {
-                // ignore scanning frame errors
-            }
-        );
-
-        isScanning.value = true;
-
-        // Check torch capabilities
         try {
-            const capabilities = html5QrCode.getRunningTrackCapabilities();
-            if (capabilities && 'torch' in capabilities) {
-                hasTorch.value = true;
+            mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false,
+            });
+        }
+
+        await nextTick();
+
+        if (videoRef.value) {
+            videoRef.value.srcObject = mediaStream;
+            await videoRef.value.play();
+        }
+
+        // Torch support
+        try {
+            const track = mediaStream.getVideoTracks()[0];
+            if (track) {
+                const caps = (track.getCapabilities && track.getCapabilities()) || {};
+                hasTorch.value = 'torch' in caps;
             }
         } catch {
             hasTorch.value = false;
         }
+
+        // Available cameras
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            cameras.value = devices
+                .filter(d => d.kind === 'videoinput')
+                .map(d => ({ id: d.deviceId, label: d.label || 'Kamera' }));
+        } catch {
+            // ignore
+        }
+
+        isScanning.value = true;
+        scanLoop();
     } catch (err: any) {
         console.error('Camera access error:', err);
         if (err.name === 'NotAllowedError' || err.message?.includes('Permission')) {
@@ -165,25 +244,31 @@ const startScanner = async () => {
 
 const switchCamera = async () => {
     if (cameras.value.length <= 1) return;
-    await stopScanner();
     currentCameraIndex.value = (currentCameraIndex.value + 1) % cameras.value.length;
-    await startScanner();
+    await startScanner(cameras.value[currentCameraIndex.value].id);
 };
 
 const toggleTorch = async () => {
-    if (!html5QrCode || !isScanning.value || !hasTorch.value) return;
+    if (!mediaStream || !hasTorch.value) return;
     try {
-        torchOn.value = !torchOn.value;
-        await html5QrCode.applyVideoConstraints({
-            advanced: [{ torch: torchOn.value } as any],
-        });
+        const track = mediaStream.getVideoTracks()[0];
+        if (track) {
+            torchOn.value = !torchOn.value;
+            await (track as any).applyConstraints({
+                advanced: [{ torch: torchOn.value }],
+            });
+        }
     } catch (e) {
         console.error('Failed to toggle torch:', e);
     }
 };
 
-const closeModal = async () => {
-    await stopScanner();
+const toggleMirror = () => {
+    isMirrored.value = !isMirrored.value;
+};
+
+const closeModal = () => {
+    stopScanner();
     emit('update:open', false);
 };
 
@@ -222,11 +307,15 @@ onUnmounted(async () => {
             </DialogHeader>
 
             <div class="relative bg-black min-h-[300px] flex flex-col items-center justify-center overflow-hidden">
-                <!-- Video scanner container -->
-                <div
-                    id="barcode-camera-scanner-view"
-                    class="w-full aspect-square max-h-[340px] flex items-center justify-center overflow-hidden [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
-                ></div>
+                <!-- Video scanner element -->
+                <video
+                    ref="videoRef"
+                    autoplay
+                    playsinline
+                    muted
+                    class="w-full aspect-square max-h-[340px] object-cover transition-transform duration-150"
+                    :style="{ transform: isMirrored ? 'scaleX(-1)' : 'none' }"
+                ></video>
 
                 <!-- Laser scanning guideline overlay -->
                 <div v-if="isScanning" class="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
@@ -268,6 +357,19 @@ onUnmounted(async () => {
                     >
                         <RefreshCw class="w-3.5 h-3.5" />
                         Ganti Kamera
+                    </Button>
+
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        @click="toggleMirror"
+                        class="text-xs h-8 gap-1.5"
+                        :class="{ 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950 dark:text-emerald-300': isMirrored }"
+                        title="Balik orientasi kamera (Mirror / Normal)"
+                    >
+                        <FlipHorizontal class="w-3.5 h-3.5" />
+                        {{ isMirrored ? 'Mirror On' : 'Flip' }}
                     </Button>
 
                     <Button

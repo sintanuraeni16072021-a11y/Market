@@ -40,7 +40,13 @@ import {
     Calculator,
     Sparkles,
     Tag,
-    RotateCcw
+    RotateCcw,
+    Camera,
+    RefreshCw,
+    Zap,
+    ZapOff,
+    AlertCircle,
+    FlipHorizontal
 } from 'lucide-vue-next';
 import { toast } from 'vue-sonner';
 
@@ -219,15 +225,25 @@ const onSearchEnter = () => {
     }
 };
 
-// Kamera barcode scanner (html5-qrcode)
+// Kamera barcode scanner (getUserMedia + BarcodeDetector & Html5Qrcode fallback)
 const showScanner = ref(false);
 const scannerError = ref('');
 const scannerStarting = ref(false);
-let qrScanner: Html5Qrcode | null = null;
+const scannerVideoRef = ref<HTMLVideoElement | null>(null);
+const availableCameras = ref<MediaDeviceInfo[]>([]);
+const currentCameraIndex = ref(0);
+const hasTorch = ref(false);
+const torchOn = ref(false);
+const isMirrored = ref(false);
+let mediaStream: MediaStream | null = null;
 let lastScannedCode = '';
 let lastScannedAt = 0;
+let scanTimer: any = null;
+let isScanning = false;
+let offscreenCanvas: HTMLCanvasElement | null = null;
+let zxingDecoder: any = null;
 
-const handleScannedCode = (code: string) => {
+const handleScannedCode = async (code: string) => {
     const clean = code.trim();
     if (!clean) return;
     const exact = props.barangList.find(
@@ -235,73 +251,246 @@ const handleScannedCode = (code: string) => {
     );
     if (exact) {
         addToCart(exact);
+        closeScanner();
     } else {
+        // Coba cari dari endpoint kasir scan
+        try {
+            const res = await fetch(`/kasir/scan/${encodeURIComponent(clean)}`, {
+                headers: { 'Accept': 'application/json' }
+            });
+            const data = await res.json();
+            if (res.ok && data.success && data.barang) {
+                addToCart(data.barang);
+                closeScanner();
+                return;
+            }
+        } catch {
+            // fallback
+        }
+
         searchProduk.value = clean;
         toast.info('Barcode tidak dikenal', { description: `Kode ${clean} tidak cocok produk mana pun` });
+        closeScanner();
     }
 };
 
 const onScanSuccess = (decodedText: string) => {
     const now = Date.now();
-    if (decodedText === lastScannedCode && now - lastScannedAt < 1500) return;
+    if (decodedText === lastScannedCode && now - lastScannedAt < 2000) return;
     lastScannedCode = decodedText;
     lastScannedAt = now;
     playSound('scan');
     handleScannedCode(decodedText);
 };
 
-const openScanner = async () => {
-    if (scannerStarting.value) return;
-    showScanner.value = true;
+const stopCameraTracks = () => {
+    if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+    }
+    if (scannerVideoRef.value) {
+        scannerVideoRef.value.srcObject = null;
+    }
+    torchOn.value = false;
+    hasTorch.value = false;
+};
+
+const scanLoop = async () => {
+    if (!isScanning) return;
+    const video = scannerVideoRef.value;
+    if (video && video.readyState >= 2 && video.videoWidth > 0) {
+        try {
+            // 1. Prioritaskan BarcodeDetector bawaan browser jika ada
+            if ('BarcodeDetector' in window) {
+                const detector = new (window as any).BarcodeDetector({
+                    formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'itf']
+                });
+                const detected = await detector.detect(video);
+                if (detected && detected.length > 0 && detected[0].rawValue) {
+                    onScanSuccess(detected[0].rawValue);
+                    return;
+                }
+            } else {
+                // 2. Fallback ZXing decoder menggunakan canvas
+                if (!offscreenCanvas) {
+                    offscreenCanvas = document.createElement('canvas');
+                }
+                offscreenCanvas.width = video.videoWidth;
+                offscreenCanvas.height = video.videoHeight;
+                const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+                if (ctx) {
+                    ctx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+                    if (!zxingDecoder) {
+                        try {
+                            const { ZXingHtml5QrcodeDecoder } = await import('html5-qrcode/esm/zxing-html5-qrcode-decoder.js');
+                            const { Html5QrcodeSupportedFormats } = await import('html5-qrcode');
+                            zxingDecoder = new ZXingHtml5QrcodeDecoder(
+                                [
+                                    Html5QrcodeSupportedFormats.EAN_13,
+                                    Html5QrcodeSupportedFormats.EAN_8,
+                                    Html5QrcodeSupportedFormats.CODE_128,
+                                    Html5QrcodeSupportedFormats.CODE_39,
+                                    Html5QrcodeSupportedFormats.UPC_A,
+                                    Html5QrcodeSupportedFormats.UPC_E,
+                                    Html5QrcodeSupportedFormats.QR_CODE,
+                                ],
+                                false,
+                                { log: () => {}, logError: () => {}, logWarn: () => {} }
+                            );
+                        } catch {
+                            // ignore import error
+                        }
+                    }
+                    if (zxingDecoder) {
+                        try {
+                            const res = zxingDecoder.decode(offscreenCanvas);
+                            if (res && res.text) {
+                                onScanSuccess(res.text);
+                                return;
+                            }
+                        } catch {
+                            // frame tanpa barcode
+                        }
+                    }
+                }
+            }
+        } catch {
+            // abaikan error decoding per frame
+        }
+    }
+
+    if (isScanning) {
+        scanTimer = setTimeout(scanLoop, 120);
+    }
+};
+
+const startScannerCamera = async (deviceId?: string) => {
     scannerError.value = '';
     scannerStarting.value = true;
-    await nextTick();
+    stopCameraTracks();
+
     try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-            throw new Error('Peramban ini tidak mendukung akses kamera.');
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('Peramban tidak mendukung akses kamera atau koneksi tidak aman (HTTPS / localhost).');
         }
-        // Bersihkan sisa render sebelumnya agar instance baru selalu mulai bersih
-        document.getElementById('kasira-scanner-reader')?.replaceChildren();
-        qrScanner = new Html5Qrcode('kasira-scanner-reader');
-        await qrScanner.start(
-            { facingMode: 'environment' },
-            { fps: 10, qrbox: { width: 250, height: 250 } },
-            onScanSuccess,
-            undefined,
-        );
+
+        // Minta izin kamera browser dan arahkan ke kamera belakang jika tersedia
+        let constraints: MediaStreamConstraints;
+        if (deviceId) {
+            constraints = {
+                video: { deviceId: { exact: deviceId } },
+                audio: false,
+            };
+        } else {
+            constraints = {
+                video: {
+                    facingMode: { ideal: 'environment' },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                audio: false,
+            };
+        }
+
+        try {
+            mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch {
+            // Fallback jika constraint ideal tidak didukung
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false,
+            });
+        }
+
+        await nextTick();
+
+        if (scannerVideoRef.value) {
+            scannerVideoRef.value.srcObject = mediaStream;
+            await scannerVideoRef.value.play();
+        }
+
+        // Cek torch / flash capability
+        try {
+            const track = mediaStream.getVideoTracks()[0];
+            if (track) {
+                const caps = (track.getCapabilities && track.getCapabilities()) || {};
+                hasTorch.value = 'torch' in caps;
+            }
+        } catch {
+            hasTorch.value = false;
+        }
+
+        // Ambil daftar kamera untuk fitur ganti kamera
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            availableCameras.value = devices.filter((d) => d.kind === 'videoinput');
+        } catch {
+            // ignore
+        }
+
+        isScanning = true;
+        scanLoop();
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/permission|NotAllowed|denied/i.test(msg)) {
-            scannerError.value = 'Izin kamera ditolak. Izinkan akses kamera di pengaturan peramban, lalu coba lagi.';
+            scannerError.value = 'Izin kamera ditolak. Mohon berikan izin kamera di pengaturan browser Anda, lalu coba lagi.';
         } else if (/notfound|NotFound|no camera|devices/i.test(msg)) {
-            scannerError.value = 'Kamera tidak ditemukan di perangkat ini.';
+            scannerError.value = 'Kamera tidak ditemukan di perangkat Anda.';
         } else if (/secure|https/i.test(msg)) {
-            scannerError.value = 'Kamera butuh koneksi aman (HTTPS). Buka aplikasi lewat https atau localhost.';
+            scannerError.value = 'Kamera membutuhkan koneksi aman (HTTPS). Buka aplikasi lewat HTTPS atau localhost.';
         } else {
-            scannerError.value = `Kamera gagal dibuka: ${msg}`;
+            scannerError.value = `Gagal membuka kamera: ${msg}`;
         }
-        toast.error('Scan Kamera Gagal', { description: scannerError.value });
+        toast.error('Kamera Gagal', { description: scannerError.value });
     } finally {
         scannerStarting.value = false;
     }
 };
 
-const closeScanner = async () => {
+const openScanner = () => {
+    showScanner.value = true;
+    scannerStarting.value = true;
+    scannerError.value = '';
+    setTimeout(() => {
+        startScannerCamera();
+    }, 200);
+};
+
+const switchCamera = async () => {
+    if (availableCameras.value.length <= 1) return;
+    currentCameraIndex.value = (currentCameraIndex.value + 1) % availableCameras.value.length;
+    const deviceId = availableCameras.value[currentCameraIndex.value].deviceId;
+    await startScannerCamera(deviceId);
+};
+
+const toggleTorch = async () => {
+    if (!mediaStream || !hasTorch.value) return;
     try {
-        if (qrScanner) {
-            if (qrScanner.isScanning) {
-                await qrScanner.stop();
-            }
-            qrScanner.clear();
+        const track = mediaStream.getVideoTracks()[0];
+        if (track) {
+            torchOn.value = !torchOn.value;
+            await (track as any).applyConstraints({
+                advanced: [{ torch: torchOn.value }],
+            });
         }
     } catch {
-        // abaikan error saat menutup kamera
-    } finally {
-        document.getElementById('kasira-scanner-reader')?.replaceChildren();
-        qrScanner = null;
-        lastScannedCode = '';
-        showScanner.value = false;
+        // torch toggle failed
     }
+};
+
+const toggleMirror = () => {
+    isMirrored.value = !isMirrored.value;
+};
+
+const closeScanner = () => {
+    isScanning = false;
+    if (scanTimer) {
+        clearTimeout(scanTimer);
+        scanTimer = null;
+    }
+    stopCameraTracks();
+    lastScannedCode = '';
+    showScanner.value = false;
 };
 
 const updateQty = (index: number, delta: number) => {
@@ -662,11 +851,7 @@ onMounted(() => {
 
 onUnmounted(() => {
     window.removeEventListener('keydown', handleKeyDown);
-    if (qrScanner) {
-        qrScanner.stop().catch(() => {});
-        qrScanner.clear();
-        qrScanner = null;
-    }
+    closeScanner();
 });
 
 const formatCurrency = (value: number) => {
@@ -1292,33 +1477,111 @@ const formatCurrency = (value: number) => {
 
         <!-- DIALOG: SCAN BARCODE KAMERA -->
         <Dialog :open="showScanner" @update:open="(v) => { if (!v) closeScanner(); }">
-            <DialogContent class="sm:max-w-md">
-                <DialogHeader>
-                    <DialogTitle class="flex items-center gap-2">
+            <DialogContent class="sm:max-w-md p-0 overflow-hidden shadow-2xl rounded-2xl">
+                <DialogHeader class="p-4 pb-2 border-b border-gray-100 dark:border-gray-800">
+                    <DialogTitle class="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
                         <ScanBarcode class="size-5 text-emerald-600" />
                         Scan Barcode Kamera
                     </DialogTitle>
-                    <DialogDescription>
+                    <DialogDescription class="text-xs text-muted-foreground">
                         Arahkan kamera ke barcode produk. Hasil scan otomatis masuk keranjang.
                     </DialogDescription>
                 </DialogHeader>
-                <div v-if="scannerStarting" class="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
-                    <span class="size-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
-                    Membuka kamera...
+
+                <div class="relative bg-black min-h-[280px] max-h-[360px] aspect-square flex items-center justify-center overflow-hidden">
+                    <!-- Elemen Video Kamera Langsung (Tidak mirror secara default, bisa di-flip) -->
+                    <video
+                        ref="scannerVideoRef"
+                        autoplay
+                        playsinline
+                        muted
+                        class="w-full h-full object-cover transition-transform duration-150"
+                        :style="{ transform: isMirrored ? 'scaleX(-1)' : 'none' }"
+                    ></video>
+
+                    <!-- Guideline & Laser Overlay saat kamera aktif -->
+                    <div v-if="!scannerStarting && !scannerError" class="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                        <div class="relative w-64 h-36 border-2 border-dashed border-emerald-400/80 rounded-xl flex items-center justify-center bg-emerald-500/5">
+                            <!-- Sudut-sudut bidik -->
+                            <div class="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-500 rounded-tl"></div>
+                            <div class="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-500 rounded-tr"></div>
+                            <div class="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-500 rounded-bl"></div>
+                            <div class="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-500 rounded-br"></div>
+                            <!-- Laser scan animasi -->
+                            <div class="w-full h-0.5 bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse"></div>
+                        </div>
+                        <span class="mt-3 text-xs text-white/90 bg-black/60 px-3 py-1 rounded-full font-medium">
+                            Posisikan barcode di dalam kotak
+                        </span>
+                    </div>
+
+                    <!-- Loading / Membuka Kamera -->
+                    <div v-if="scannerStarting" class="absolute inset-0 bg-black/85 flex flex-col items-center justify-center gap-2 text-white">
+                        <span class="size-6 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+                        <span class="text-xs font-medium">Membuka kamera...</span>
+                    </div>
+
+                    <!-- Pesan Error / Izin Ditolak -->
+                    <div
+                        v-else-if="scannerError"
+                        class="absolute inset-0 bg-zinc-900/95 flex flex-col items-center justify-center p-6 text-center text-white"
+                        role="alert"
+                    >
+                        <AlertCircle class="w-10 h-10 text-red-400 mb-2" />
+                        <p class="text-xs font-medium mb-4 text-red-300 max-w-xs">{{ scannerError }}</p>
+                        <Button type="button" variant="outline" size="sm" @click="startScannerCamera()" class="text-white border-zinc-700 hover:bg-zinc-800 text-xs">
+                            Coba Lagi
+                        </Button>
+                    </div>
                 </div>
-                <div
-                    v-else-if="scannerError"
-                    class="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-center text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
-                    role="alert"
-                >
-                    {{ scannerError }}
+
+                <!-- Kontrol Footer: Ganti Kamera & Mirror & Flash & Tutup -->
+                <div class="p-3 bg-gray-50 dark:bg-zinc-900/80 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <Button
+                            v-if="availableCameras.length > 1"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            @click="switchCamera"
+                            class="text-xs h-8 gap-1.5"
+                        >
+                            <RefreshCw class="w-3.5 h-3.5" />
+                            Ganti Kamera
+                        </Button>
+
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            @click="toggleMirror"
+                            class="text-xs h-8 gap-1.5"
+                            :class="{ 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950 dark:text-emerald-300': isMirrored }"
+                            title="Balik orientasi kamera (Mirror / Normal)"
+                        >
+                            <FlipHorizontal class="w-3.5 h-3.5" />
+                            {{ isMirrored ? 'Mirror On' : 'Flip' }}
+                        </Button>
+
+                        <Button
+                            v-if="hasTorch"
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            @click="toggleTorch"
+                            class="text-xs h-8 gap-1.5"
+                            :class="{ 'bg-amber-100 text-amber-900 border-amber-300': torchOn }"
+                        >
+                            <Zap v-if="!torchOn" class="w-3.5 h-3.5" />
+                            <ZapOff v-else class="w-3.5 h-3.5" />
+                            Flash
+                        </Button>
+                    </div>
+
+                    <Button type="button" variant="secondary" size="sm" @click="closeScanner" class="text-xs h-8 ml-auto">
+                        Tutup Kamera
+                    </Button>
                 </div>
-                <div v-show="!scannerStarting && !scannerError" id="kasira-scanner-reader" class="overflow-hidden rounded-lg" />
-                <DialogFooter class="gap-2 pt-2">
-                    <DialogClose as-child>
-                        <Button type="button" variant="outline" class="w-full">Tutup Kamera</Button>
-                    </DialogClose>
-                </DialogFooter>
             </DialogContent>
         </Dialog>
     </div>

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import ProdukForm from '@/components/ProdukForm.vue';
+import BarcodeScannerModal from '@/components/BarcodeScannerModal.vue';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,8 +29,10 @@ import {
     Plus,
     Power,
     Search,
+    ScanBarcode,
     Trash2,
 } from 'lucide-vue-next';
+import { toast } from 'vue-sonner';
 
 interface Barang {
     id_barang: number;
@@ -68,6 +71,7 @@ const props = defineProps<{
 
 const showForm = ref(false);
 const editingItem = ref<Barang | null>(null);
+const showScanner = ref(false);
 
 const openCreate = () => {
     editingItem.value = null;
@@ -77,6 +81,12 @@ const openCreate = () => {
 const openEdit = (item: Barang) => {
     editingItem.value = item;
     showForm.value = true;
+};
+
+const onScanResult = (barcode: string) => {
+    const clean = barcode.trim();
+    search.value = clean;
+    toast.success('Barcode terpindai', { description: `Mencari produk: ${clean}` });
 };
 
 const search = ref(props.filters.search ?? '');
@@ -175,15 +185,26 @@ const goToPage = (page: number) => {
             </CardHeader>
             <CardContent class="space-y-4">
                 <div class="flex flex-col gap-3 md:flex-row">
-                    <div class="relative flex-1">
-                        <Search class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-400" />
-                        <Input
-                            v-model="search"
-                            type="text"
-                            placeholder="Cari produk, barcode..."
-                            aria-label="Cari produk"
-                            class="w-full border-gray-300 bg-gray-50 pr-3 pl-10 text-gray-800 placeholder:text-gray-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 focus:outline-none"
-                        />
+                    <div class="flex flex-1 gap-2">
+                        <div class="relative flex-1">
+                            <Search class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-400" />
+                            <Input
+                                v-model="search"
+                                type="text"
+                                placeholder="Cari produk, barcode..."
+                                aria-label="Cari produk"
+                                class="w-full border-gray-300 bg-gray-50 pr-3 pl-10 text-gray-800 placeholder:text-gray-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 focus:outline-none"
+                            />
+                        </div>
+                        <Button
+                            type="button"
+                            class="h-10 shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white"
+                            title="Scan barcode pakai kamera"
+                            @click="showScanner = true"
+                        >
+                            <ScanBarcode class="size-4 sm:mr-1.5" />
+                            <span class="hidden sm:inline text-xs font-semibold">Scan</span>
+                        </Button>
                     </div>
                     <Select v-model="kategori">
                         <SelectTrigger
@@ -398,5 +419,14 @@ const goToPage = (page: number) => {
                 </DialogFooter>
             </DialogContent>
         </Dialog>
+
+        <!-- Modal Scan Barcode Kamera -->
+        <BarcodeScannerModal
+            :open="showScanner"
+            title="Scan Barcode Produk"
+            description="Arahkan kamera ke barcode produk untuk mencari produk secara otomatis."
+            @update:open="showScanner = $event"
+            @scan="onScanResult"
+        />
     </div>
 </template>
