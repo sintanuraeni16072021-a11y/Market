@@ -282,10 +282,15 @@ const startScanner = async (deviceId?: string) => {
 
         await nextTick();
 
-        if (videoRef.value) {
-            videoRef.value.srcObject = mediaStream;
-            await videoRef.value.play();
+        // Tunggu elemen video benar-benar ter-mount (portal Dialog kadang telat 1 frame)
+        for (let i = 0; i < 20 && !videoRef.value; i++) {
+            await new Promise((r) => setTimeout(r, 50));
         }
+        if (!videoRef.value) {
+            throw new Error('Elemen video tidak siap. Tutup modal lalu buka lagi.');
+        }
+        videoRef.value.srcObject = mediaStream;
+        await videoRef.value.play();
 
         // Torch support
         try {
@@ -311,11 +316,20 @@ const startScanner = async (deviceId?: string) => {
         isScanning.value = true;
         scanLoop();
     } catch (err: any) {
-        console.error('Camera access error:', err);
-        if (err.name === 'NotAllowedError' || err.message?.includes('Permission')) {
-            errorMsg.value = 'Izin kamera ditolak. Mohon berikan izin akses kamera di browser Anda.';
+        const msg = err?.message || 'Terjadi kesalahan';
+        const secure = window.isSecureContext ? 'ya' : 'TIDAK';
+        const api = navigator.mediaDevices?.getUserMedia ? 'ada' : 'TIDAK ADA';
+        console.error('[scanner-modal] gagal:', err, { secure, api, url: location.href });
+        if (err.name === 'NotAllowedError' || /permission|denied/i.test(msg)) {
+            errorMsg.value = 'Izin kamera ditolak. Klik ikon kamera/gembok di address bar → izinkan kamera → tutup lalu buka lagi.';
+        } else if (/notfound|devices|Overconstrained/i.test(msg)) {
+            errorMsg.value = 'Kamera tidak ditemukan. Pastikan perangkat punya kamera dan tidak dipakai aplikasi lain.';
+        } else if (!window.isSecureContext) {
+            errorMsg.value = 'Browser memblokir kamera karena koneksi tidak aman. Buka via http://localhost:8000 atau pasang HTTPS.';
+        } else if (/Elemen video tidak siap/i.test(msg)) {
+            errorMsg.value = msg;
         } else {
-            errorMsg.value = `Gagal mengakses kamera: ${err.message || 'Terjadi kesalahan'}`;
+            errorMsg.value = `Gagal mengakses kamera: ${msg} (aman:${secure}, api:${api})`;
         }
         isScanning.value = false;
     }

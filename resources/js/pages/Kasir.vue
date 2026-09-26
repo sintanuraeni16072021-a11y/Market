@@ -477,10 +477,15 @@ const startScannerCamera = async (deviceId?: string) => {
 
         await nextTick();
 
-        if (scannerVideoRef.value) {
-            scannerVideoRef.value.srcObject = mediaStream;
-            await scannerVideoRef.value.play();
+        // Tunggu elemen video benar-benar ter-mount (portal Dialog kadang telat 1 frame)
+        for (let i = 0; i < 20 && !scannerVideoRef.value; i++) {
+            await new Promise((r) => setTimeout(r, 50));
         }
+        if (!scannerVideoRef.value) {
+            throw new Error('Elemen video tidak siap. Tutup modal lalu buka lagi.');
+        }
+        scannerVideoRef.value.srcObject = mediaStream;
+        await scannerVideoRef.value.play();
 
         // Cek torch / flash capability
         try {
@@ -505,14 +510,19 @@ const startScannerCamera = async (deviceId?: string) => {
         scanLoop();
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        const secure = window.isSecureContext ? 'ya' : 'TIDAK';
+        const api = navigator.mediaDevices?.getUserMedia ? 'ada' : 'TIDAK ADA';
+        console.error('[scanner] gagal:', msg, { secure, api, url: location.href });
         if (/permission|NotAllowed|denied/i.test(msg)) {
-            scannerError.value = 'Izin kamera ditolak. Mohon berikan izin kamera di pengaturan browser Anda, lalu coba lagi.';
-        } else if (/notfound|NotFound|no camera|devices/i.test(msg)) {
-            scannerError.value = 'Kamera tidak ditemukan di perangkat Anda.';
-        } else if (/secure|https/i.test(msg)) {
-            scannerError.value = 'Kamera membutuhkan koneksi aman (HTTPS). Buka aplikasi lewat HTTPS atau localhost.';
+            scannerError.value = 'Izin kamera ditolak. Klik ikon kamera/gembok di address bar → izinkan kamera → tutup lalu buka lagi.';
+        } else if (/notfound|NotFound|no camera|devices|Overconstrained/i.test(msg)) {
+            scannerError.value = 'Kamera tidak ditemukan. Pastikan perangkat punya kamera dan tidak dipakai aplikasi lain (Zoom/Meet).';
+        } else if (!window.isSecureContext || /secure|https/i.test(msg)) {
+            scannerError.value = 'Browser memblokir kamera karena koneksi tidak aman. Buka via http://localhost:8000 atau pasang HTTPS.';
+        } else if (/Elemen video tidak siap/i.test(msg)) {
+            scannerError.value = msg;
         } else {
-            scannerError.value = `Gagal membuka kamera: ${msg}`;
+            scannerError.value = `Gagal membuka kamera: ${msg} (aman:${secure}, api:${api})`;
         }
         toast.error('Kamera Gagal', { description: scannerError.value });
     } finally {
